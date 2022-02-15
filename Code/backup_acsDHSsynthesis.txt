@@ -1,0 +1,127 @@
+rm(list = ls())
+
+setwd("C:/Users/Abdullah/Desktop/Grad_School/Research/Refugee_migration/Data/cleaned")
+
+install.packages("tidycensus")
+library(tidyverse)
+library(tidycensus)
+library(stargazer)
+
+###########################################################
+
+# Cross-reference country-year pairs (one year)
+
+imm <- readRDS("acs_immigrants_10percent.Rdata") %>% filter(YRIMMIG == 2015)
+rfg_arrvls <- readRDS("DHS_arrivals_cleaned.Rdata") %>% select("country", "2015")
+
+imm_sum <- imm %>% group_by(country) %>% summarize(wgtdsum = sum(PERWT))
+
+
+###########################################################
+
+# cross reference country-year pairs (10 percent sample; all years)
+
+imm <- readRDS("acs_immigrants_10percent.Rdata") 
+rfg_arrvls <- readRDS("DHS_arrivals_cleaned.Rdata") %>% select(!sum)
+
+imm_sum <- imm %>% filter(YRIMMIG > 1999) %>% 
+  group_by(country, YRIMMIG) %>% summarize(wgtdsum = sum(PERWT))
+
+rfg_arrvls <- rfg_arrvls %>% pivot_longer(!country, names_to = "year", values_to = "count")
+rfg_arrvls$year <- as.numeric(rfg_arrvls$year)
+
+immgref <- left_join(rfg_arrvls, imm_sum, by = c("country" = "country", "year" = "YRIMMIG")) %>%
+  mutate(ratio = count/wgtdsum) %>%
+  filter(ratio > .7)
+
+############################################################
+
+# cross reference country-year pairs (full sample; all years)
+
+imm_f <- readRDS("acs_immigrants_full.Rdata") 
+rfg_arrvls <- readRDS("DHS_arrivals_cleaned.Rdata") %>% select(!sum)
+
+# imm_f_sum1 <- imm_f %>% filter(YRIMMIG > 1999) %>%
+#   group_by(country, YRIMMIG, YEAR) %>%
+#   summarize(wgtdsum = sum(PERWT)) %>% 
+#   group_by(country, YRIMMIG) %>% 
+#   filter(YRIMMIG >= YEAR) %>% 
+#   summarize(n = mean(wgtdsum))
+# To comment/uncomment use Ctrl+Shift+C
+
+imm_f_sum <- imm_f %>% filter(YRIMMIG > 1999) %>% 
+  group_by(country, YRIMMIG, YEAR) %>% 
+  summarize(totimmg = sum(PERWT)) %>%
+  filter(YRIMMIG < YEAR) %>% 
+  summarize(yravg = mean(totimmg))
+
+rfg_arrvls <- rfg_arrvls %>% pivot_longer(!country, names_to = "year", values_to = "count")
+rfg_arrvls$year <- as.numeric(rfg_arrvls$year)
+
+imm_f_sum$country[imm_f_sum$country == "Byelorussia"] <- "Belarus"
+imm_f_sum$country[imm_f_sum$country == "Bosnia"] <- "Bosnia-Herzegovina"
+imm_f_sum$country[imm_f_sum$country == "Republic of Georgia"] <- "Georgia"
+imm_f_sum$country[imm_f_sum$country == "Moldovia"] <- "Moldova"
+imm_f_sum$country[imm_f_sum$country == 'Other USSR/"Russia"'] <- "Russia"
+imm_f_sum$country[imm_f_sum$country == "Burma (Myanmar)"] <- "Burma"
+imm_f_sum$country[imm_f_sum$country == "Cambodia (Kampuchea)"] <- "Cambodia"
+imm_f_sum$country[imm_f_sum$country == "China"] <- "China,People'sRepublic"
+imm_f_sum$country[imm_f_sum$country == "Congo"] <- "Congo,DemocraticRepublic"
+imm_f_sum$country[imm_f_sum$country == "Ivory Coast"] <- "Coted'Ivoire"
+imm_f_sum$country[imm_f_sum$country == "Egypt/United Arab Rep."] <- "Egypt"
+imm_f_sum$country[imm_f_sum$country == "Gambia"] <- "Gambia,The"
+imm_f_sum$country[imm_f_sum$country == "Sierra Leone"] <- "SierraLeone"
+imm_f_sum$country[imm_f_sum$country == "Serbia"] <- "SerbiaandMontenegro"
+imm_f_sum$country[imm_f_sum$country == "South Sudan"] <- "SouthSudan"
+imm_f_sum$country[imm_f_sum$country == "El Salvador"] <- "ElSalvador"
+
+
+immgref <- left_join(rfg_arrvls, imm_f_sum, by = c("country" = "country", "year" = "YRIMMIG")) %>%
+  mutate(ratio = count/yravg)
+
+ggplot(data = immgref, aes(x = yravg, y = count)) +
+  geom_point() +
+  geom_abline(intercept=0, slope=0.7) +
+  scale_x_continuous(breaks = seq(0, 50000, 10000), 
+                     limits = c(0, 50000)) +
+  scale_y_continuous(limits = c(0, 50000))
+         
+refgs <- immgref %>% filter(ratio > 0.7)
+
+# How to code refugee country, year pairs easily in the imm_f data to indicate refugee
+# Download ACS 2019 for completion (2018 immigrants omitted based on my line 55 code)
+
+# Migrated after 1999
+imm_f1 <- filter(imm_f, YRIMMIG > 1999)
+
+# Create refugee dummy = 1 in imm_f1 dataframe
+imm_f1$refgstts <- match(paste(imm_f1$country, imm_f1$YRIMMIG),
+                         paste(refgs$country, refgs$year),
+                         nomatch = NA)
+imm_f1$refgstts[!is.na(imm_f1$refgstts)] <- 1
+imm_f1$refgstts[is.na(imm_f1$refgstts)] <- 0
+
+# Create within-state and between-state migration dummies
+imm_f1$mvrswnst <- ifelse(imm_f1$MIGRATE1 == 2, 1, 0)
+imm_f1$mvrsbnst <- ifelse(imm_f1$MIGRATE1 == 3, 1, 0)
+
+# Run the first refugee status on migration regressions
+mvwnreg <- lm(mvrswnst ~ refgstts, data = imm_f1)
+mvbnreg <- lm(mvrsbnst ~ refgstts, data = imm_f1)
+
+stargazer(mvwnreg, mvbnreg, type = 'text')
+
+# Add controls
+mvwnreg1 <- lm(mvrswnst ~ factor(refgstts) + EDUC + INCTOT + factor(country), data = imm_f1)
+mvbnreg1 <- lm(mvrsbnst ~ factor(refgstts) + EDUC + INCTOT + factor(country), data = imm_f1)
+
+stargazer(mvwnreg1, mvbnreg1, type = 'text', omit = "country")
+
+# probit
+mvwnprob <- glm(mvrswnst ~ factor(refgstts) + EDUC + INCTOT + factor(country),
+                data = imm_f1, family = binomial(link = "probit"))
+mvbnprob <- glm(mvrsbnst ~ factor(refgstts) + EDUC + INCTOT + factor(country),
+                data = imm_f1, family = binomial(link = "probit"))
+
+stargazer(mvwnprob, mvbnprob, type = 'text', omit = "country")
+
